@@ -1,0 +1,13 @@
+{
+  "name": "hindsight-agent",
+  "version": "0.1.0",
+  "description": "Post-implementation code review agent triggered by Claude Code's Stop hook",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0"
+  }
+}
