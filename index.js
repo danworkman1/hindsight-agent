@@ -13,6 +13,7 @@ import { readFileSync } from "fs";
 import { runAgent, MODELS } from "./lib/agent-loop.js";
 import { tools, toolHandlers } from "./lib/tools.js";
 import { computeDiffHash, getCachedReview, setCachedReview } from "./lib/cache.js";
+import { logReview, logSkip } from "./lib/logger.js";
 
 // ---------------------------------------------------------------------------
 // Stdin handling — the Stop hook pipes a JSON object describing the session.
@@ -40,8 +41,14 @@ function readHookInput() {
 async function triage() {
   const system = `You are a code change detector. Use the available tools to inspect the working tree and determine whether source code was added or refactored.
 
-Respond with ONLY a JSON object on a single line, no markdown, no prose:
+Your ENTIRE response must be a single JSON object and nothing else. No prose before, no prose after, no markdown fences.
+
+Schema:
 {"changed": boolean, "summary": "one-line description"}
+
+Examples of valid responses:
+{"changed": true, "summary": "Added new auth middleware in src/auth.ts"}
+{"changed": false, "summary": "Only README.md was modified"}
 
 Rules:
 - "changed" is true ONLY if source code (functions, components, logic) was added or modified
@@ -58,23 +65,43 @@ Rules:
     model: MODELS.HAIKU,
   });
 
-  // Strip any accidental markdown fences and parse
-  const cleaned = result
-    .trim()
-    .replace(/^```(?:json)?\s*/, "")
-    .replace(/\s*```$/, "")
-    .trim();
+  // Try to extract a JSON object from the response. Models sometimes wrap their
+  // JSON in prose or markdown fences despite instructions, so we look for the
+  // first balanced {...} block rather than demanding the whole response be JSON.
+  const parsed = extractJsonObject(result);
 
-  try {
-    const parsed = JSON.parse(cleaned);
-    return {
-      changed: Boolean(parsed.changed),
-      summary: String(parsed.summary || ""),
-    };
-  } catch {
-    // If the model didn't give us valid JSON, fail safe: skip the deep review.
+  if (!parsed) {
+    console.error("[triage] Could not parse JSON from model response:");
+    console.error("---");
+    console.error(result);
+    console.error("---");
     return { changed: false, summary: "Could not parse triage output" };
   }
+
+  return {
+    changed: Boolean(parsed.changed),
+    summary: String(parsed.summary || ""),
+  };
+}
+
+/**
+ * Find the first valid JSON object in a string. Returns the parsed object,
+ * or null if no valid JSON object is found. Tolerates prose before/after,
+ * markdown fences, and trailing commentary.
+ */
+function extractJsonObject(text) {
+  // Walk the string looking for a `{` then try to parse the substring from
+  // there to each subsequent `}`, returning the first successful parse.
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    for (let end = text.lastIndexOf("}"); end > start; end = text.lastIndexOf("}", end - 1)) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        // try a smaller slice
+      }
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,13 +140,21 @@ async function main() {
   readHookInput(); // currently unused, but consume stdin so the hook process doesn't hang
 
   // 1. Hash the current state
-  const hash = computeDiffHash();
+  const diffResult = computeDiffHash();
 
-  if (!hash) {
-    // Not a git repo, or no changes at all — nothing to review
-    console.log("✓ No changes detected — skipping review.");
+  if (diffResult.status === "not_a_repo") {
+    console.log("✓ Not a git repo — skipping review.");
+    logSkip("skip", "not a git repo");
     return;
   }
+
+  if (diffResult.status === "no_changes") {
+    console.log("✓ No changes in working tree — skipping review.");
+    logSkip("skip", "no changes in working tree");
+    return;
+  }
+
+  const hash = diffResult.hash;
 
   // 2. Cache check
   const cached = getCachedReview(hash);
@@ -128,19 +163,35 @@ async function main() {
     console.log("─".repeat(60));
     console.log(cached.review);
     console.log("─".repeat(60));
+
+    if (cached.changed) {
+      logReview({
+        summary: cached.summary,
+        review: cached.review,
+        fromCache: true,
+      });
+    } else {
+      logSkip("cached", `no substantive changes — ${cached.summary}`);
+    }
     return;
   }
 
   // 3. Triage
   const { changed, summary } = await triage();
 
+  const triageFailed = summary === "Could not parse triage output";
+
   if (!changed) {
     console.log(`✓ No substantive code changes — skipping deep review. (${summary})`);
-    setCachedReview(hash, {
-      changed: false,
-      summary,
-      review: `No substantive code changes: ${summary}`,
-    });
+    // Don't cache parse failures — let the next run try again
+    if (!triageFailed) {
+      setCachedReview(hash, {
+        changed: false,
+        summary,
+        review: `No substantive code changes: ${summary}`,
+      });
+    }
+    logSkip("skip", `triage said no — ${summary}`);
     return;
   }
 
@@ -150,8 +201,9 @@ async function main() {
 
   const review = await deepReview(summary);
 
-  // 5. Cache and print
+  // 5. Cache, log, and print
   setCachedReview(hash, { changed: true, summary, review });
+  logReview({ summary, review });
 
   console.log("─".repeat(60));
   console.log(review);
