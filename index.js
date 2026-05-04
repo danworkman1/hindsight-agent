@@ -133,6 +133,7 @@ Rules:
     console.error("---");
     console.error(raw);
     console.error("---");
+    // Safe fallback — treat as clean so we don't block or crash
     return { verdict: "clean", prose: "", files: [], suggestions: [] };
   }
 
@@ -204,6 +205,7 @@ async function main() {
 
   if (!changed) {
     console.log(`✓ No substantive code changes — skipping deep review. (${summary})`);
+    // Don't cache parse failures — let the next run try again
     if (!triageFailed) {
       setCachedReview(hash, {
         changed: false,
@@ -239,5 +241,6 @@ async function main() {
 
 main().catch((err) => {
   console.error("Reviewer agent failed:", err.message);
+  // Exit 0 so a hook failure never blocks Claude Code
   process.exit(0);
 });
