@@ -4,26 +4,23 @@
 //
 // Flow:
 //   1. Compute a hash of the current working-tree state
-//   2. If we've reviewed this exact state before, print the cached result and exit
+//   2. If we've reviewed this exact state before, replay the cached result and exit
 //   3. Otherwise, run Phase 1 (triage): was code actually changed?
 //   4. If yes, run Phase 2 (deep review): is there a cleaner solution?
 //   5. Cache the result and print it
 
 import { readFileSync } from "fs";
+import { basename } from "path";
 import { runAgent, MODELS } from "./lib/agent-loop.js";
 import { tools, toolHandlers } from "./lib/tools.js";
 import { computeDiffHash, getCachedReview, setCachedReview } from "./lib/cache.js";
-import { logReview, logSkip } from "./lib/logger.js";
+import { logReview, logSkip, renderReview } from "./lib/logger.js";
 import { extractJsonObject } from "./lib/parse.js";
 
 // ---------------------------------------------------------------------------
 // Stdin handling — the Stop hook pipes a JSON object describing the session.
-// We don't strictly need it yet, but read it gracefully so we don't break
-// when run manually (no stdin) or when the schema gains fields later.
 // ---------------------------------------------------------------------------
 function readHookInput() {
-  // If stdin is a TTY (interactive terminal), there's no piped input —
-  // skip the read so manual runs don't hang waiting for keyboard input.
   if (process.stdin.isTTY) return {};
 
   try {
@@ -66,9 +63,6 @@ Rules:
     model: MODELS.HAIKU,
   });
 
-  // Try to extract a JSON object from the response. Models sometimes wrap their
-  // JSON in prose or markdown fences despite instructions, so we look for the
-  // first balanced {...} block rather than demanding the whole response be JSON.
   const parsed = extractJsonObject(result);
 
   if (!parsed) {
@@ -84,7 +78,6 @@ Rules:
     summary: String(parsed.summary || ""),
   };
 }
-
 
 // ---------------------------------------------------------------------------
 // Phase 2: Deep review. Only runs when triage says code changed.
@@ -140,7 +133,6 @@ Rules:
     console.error("---");
     console.error(raw);
     console.error("---");
-    // Safe fallback — treat as clean so we don't block or crash
     return { verdict: "clean", prose: "", files: [], suggestions: [] };
   }
 
@@ -156,7 +148,7 @@ Rules:
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  readHookInput(); // currently unused, but consume stdin so the hook process doesn't hang
+  const hookInput = readHookInput(); // stop_hook_active will be used in feedback mode
 
   // 1. Hash the current state
   const diffResult = computeDiffHash();
@@ -179,14 +171,24 @@ async function main() {
   const cached = getCachedReview(hash);
   if (cached) {
     console.log("✓ Already reviewed this state (cached).");
-    console.log("─".repeat(60));
-    console.log(cached.review);
-    console.log("─".repeat(60));
+    console.log(renderReview({
+      ts: new Date().toISOString(),
+      project: basename(process.cwd()),
+      tag: "REVIEW cached",
+      summary: cached.summary,
+      verdict: cached.verdict,
+      prose: cached.prose ?? "",
+      files: cached.files ?? [],
+      suggestions: cached.suggestions ?? [],
+    }));
 
     if (cached.changed) {
       logReview({
         summary: cached.summary,
-        review: cached.review,
+        verdict: cached.verdict,
+        prose: cached.prose ?? "",
+        files: cached.files ?? [],
+        suggestions: cached.suggestions ?? [],
         fromCache: true,
       });
     } else {
@@ -202,12 +204,14 @@ async function main() {
 
   if (!changed) {
     console.log(`✓ No substantive code changes — skipping deep review. (${summary})`);
-    // Don't cache parse failures — let the next run try again
     if (!triageFailed) {
       setCachedReview(hash, {
         changed: false,
         summary,
-        review: `No substantive code changes: ${summary}`,
+        verdict: "clean",
+        prose: "",
+        files: [],
+        suggestions: [],
       });
     }
     logSkip("skip", `triage said no — ${summary}`);
@@ -218,19 +222,22 @@ async function main() {
   console.log(`→ Code changed: ${summary}`);
   console.log(`→ Running deep review...\n`);
 
-  const review = await deepReview(summary);
+  const result = await deepReview(summary);
 
   // 5. Cache, log, and print
-  setCachedReview(hash, { changed: true, summary, review });
-  logReview({ summary, review });
+  setCachedReview(hash, { changed: true, summary, ...result });
+  logReview({ summary, ...result });
 
-  console.log("─".repeat(60));
-  console.log(review);
-  console.log("─".repeat(60));
+  console.log(renderReview({
+    ts: new Date().toISOString(),
+    project: basename(process.cwd()),
+    tag: "REVIEW",
+    summary,
+    ...result,
+  }));
 }
 
 main().catch((err) => {
   console.error("Reviewer agent failed:", err.message);
-  // Exit 0 so a hook failure never blocks Claude Code
   process.exit(0);
 });
