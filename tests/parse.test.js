@@ -41,3 +41,9 @@ test("returns null for empty string", () => {
   const result = extractJsonObject("");
   assert.equal(result, null);
 });
+
+test("skips invalid JSON block and finds the valid one that follows", () => {
+  const input = '{bad json} {"verdict":"clean","prose":"","files":[],"suggestions":[]}';
+  const result = extractJsonObject(input);
+  assert.equal(result.verdict, "clean");
+});
