@@ -88,31 +88,68 @@ Rules:
 
 // ---------------------------------------------------------------------------
 // Phase 2: Deep review. Only runs when triage says code changed.
-// Returns the review text.
+// Returns a structured object { verdict, prose, files, suggestions }
 // ---------------------------------------------------------------------------
 async function deepReview(triageSummary) {
   const system = `You are a senior engineer doing a post-implementation review. The code WORKS — your job is not to find bugs, but to ask: now that we have a working solution and the full picture, is there a cleaner approach?
 
 Look for:
-- Abstractions that became unnecessary once the solution crystallized
+- Abstractions that became unnecessary once the solution crystallised
 - Code that could be simpler, shorter, or more idiomatic
 - Patterns that were appropriate mid-flight but redundant in hindsight
 - Opportunities to delete code
 
-Be concrete. Reference files and lines. If the solution is already clean, say so plainly — don't invent improvements.
+Be concrete. Reference files and lines. If the solution is already clean, say so plainly — do not invent improvements.
 
-Output format:
-- Verdict: clean | minor suggestions | worth refactoring
-- If not "clean", list specific suggestions with file references`;
+Your ENTIRE response must be a single JSON object and nothing else. No prose before, no prose after, no markdown fences.
 
-  return runAgent({
+Schema:
+{
+  "verdict": "clean" | "minor" | "worth_refactoring",
+  "prose": "string — omit or use empty string for clean verdict",
+  "files": ["array of affected file paths — empty for clean"],
+  "suggestions": [
+    {
+      "file": "path/to/file.ts",
+      "lines": "45-67",
+      "issue": "what the problem is",
+      "fix": "what to do instead"
+    }
+  ]
+}
+
+Rules:
+- verdict "clean": solution is good. prose = "". files = []. suggestions = [].
+- verdict "minor": small notes not worth acting on. prose = full explanation. files = affected files. suggestions = [].
+- verdict "worth_refactoring": meaningful improvement available. prose = full explanation. files = affected files. suggestions = one entry per distinct change.
+- Line numbers in suggestions are best-effort — prose is authoritative if they conflict.`;
+
+  const raw = await runAgent({
     system,
-    userPrompt: `A coding session just completed. Triage summary: ${triageSummary}\n\nReview the changes and assess whether there's a cleaner solution now.`,
+    userPrompt: `A coding session just completed. Triage summary: ${triageSummary}\n\nReview the changes and assess whether there is a cleaner solution now.`,
     tools,
     toolHandlers,
     maxIterations: 15,
     model: MODELS.SONNET,
   });
+
+  const parsed = extractJsonObject(raw);
+
+  if (!parsed || !parsed.verdict) {
+    console.error("[deepReview] Could not parse JSON from model response:");
+    console.error("---");
+    console.error(raw);
+    console.error("---");
+    // Safe fallback — treat as clean so we don't block or crash
+    return { verdict: "clean", prose: "", files: [], suggestions: [] };
+  }
+
+  return {
+    verdict: parsed.verdict,
+    prose: parsed.prose ?? "",
+    files: Array.isArray(parsed.files) ? parsed.files : [],
+    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+  };
 }
 
 // ---------------------------------------------------------------------------
