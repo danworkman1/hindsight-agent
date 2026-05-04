@@ -4,3 +4,5 @@ reviews.log
 .env
 *.log
 .worktrees/
+docs
+.claude
