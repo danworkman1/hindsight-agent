@@ -14,6 +14,7 @@ import { runAgent, MODELS } from "./lib/agent-loop.js";
 import { tools, toolHandlers } from "./lib/tools.js";
 import { computeDiffHash, getCachedReview, setCachedReview } from "./lib/cache.js";
 import { logReview, logSkip } from "./lib/logger.js";
+import { extractJsonObject } from "./lib/parse.js";
 
 // ---------------------------------------------------------------------------
 // Stdin handling — the Stop hook pipes a JSON object describing the session.
@@ -84,25 +85,6 @@ Rules:
   };
 }
 
-/**
- * Find the first valid JSON object in a string. Returns the parsed object,
- * or null if no valid JSON object is found. Tolerates prose before/after,
- * markdown fences, and trailing commentary.
- */
-function extractJsonObject(text) {
-  // Walk the string looking for a `{` then try to parse the substring from
-  // there to each subsequent `}`, returning the first successful parse.
-  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
-    for (let end = text.lastIndexOf("}"); end > start; end = text.lastIndexOf("}", end - 1)) {
-      try {
-        return JSON.parse(text.slice(start, end + 1));
-      } catch {
-        // try a smaller slice
-      }
-    }
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Phase 2: Deep review. Only runs when triage says code changed.
