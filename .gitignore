@@ -3,3 +3,4 @@ review-cache.json
 reviews.log
 .env
 *.log
+.worktrees/
