@@ -7,14 +7,13 @@
 //   2. If we've reviewed this exact state before, replay the cached result and exit
 //   3. Otherwise, run Phase 1 (triage): was code actually changed?
 //   4. If yes, run Phase 2 (deep review): is there a cleaner solution?
-//   5. Cache the result and print it
+//   5. Cache the result and append it to reviews.log
 
 import { readFileSync } from "fs";
-import { basename } from "path";
 import { runAgent, MODELS } from "./lib/agent-loop.js";
 import { tools, toolHandlers } from "./lib/tools.js";
 import { computeDiffHash, getCachedReview, setCachedReview } from "./lib/cache.js";
-import { logReview, logSkip, renderReview } from "./lib/logger.js";
+import { logReview, logSkip, logError } from "./lib/logger.js";
 import { extractJsonObject } from "./lib/parse.js";
 
 // ---------------------------------------------------------------------------
@@ -66,10 +65,7 @@ Rules:
   const parsed = extractJsonObject(result);
 
   if (!parsed) {
-    console.error("[triage] Could not parse JSON from model response:");
-    console.error("---");
-    console.error(result);
-    console.error("---");
+    logError("triage", "Could not parse JSON from model response", result);
     return { changed: false, summary: "Could not parse triage output" };
   }
 
@@ -129,10 +125,7 @@ Rules:
   const parsed = extractJsonObject(raw);
 
   if (!parsed || !parsed.verdict) {
-    console.error("[deepReview] Could not parse JSON from model response:");
-    console.error("---");
-    console.error(raw);
-    console.error("---");
+    logError("deepReview", "Could not parse JSON from model response", raw);
     // Safe fallback — treat as clean so we don't block or crash
     return { verdict: "clean", prose: "", files: [], suggestions: [] };
   }
@@ -155,13 +148,11 @@ async function main() {
   const diffResult = computeDiffHash();
 
   if (diffResult.status === "not_a_repo") {
-    console.log("✓ Not a git repo — skipping review.");
     logSkip("skip", "not a git repo");
     return;
   }
 
   if (diffResult.status === "no_changes") {
-    console.log("✓ No changes in working tree — skipping review.");
     logSkip("skip", "no changes in working tree");
     return;
   }
@@ -171,18 +162,6 @@ async function main() {
   // 2. Cache check
   const cached = getCachedReview(hash);
   if (cached) {
-    console.log("✓ Already reviewed this state (cached).");
-    console.log(renderReview({
-      ts: new Date().toISOString(),
-      project: basename(process.cwd()),
-      tag: "REVIEW cached",
-      summary: cached.summary,
-      verdict: cached.verdict,
-      prose: cached.prose ?? "",
-      files: cached.files ?? [],
-      suggestions: cached.suggestions ?? [],
-    }));
-
     if (cached.changed) {
       logReview({
         summary: cached.summary,
@@ -204,7 +183,6 @@ async function main() {
   const triageFailed = summary === "Could not parse triage output";
 
   if (!changed) {
-    console.log(`✓ No substantive code changes — skipping deep review. (${summary})`);
     // Don't cache parse failures — let the next run try again
     if (!triageFailed) {
       setCachedReview(hash, {
@@ -221,26 +199,15 @@ async function main() {
   }
 
   // 4. Deep review
-  console.log(`→ Code changed: ${summary}`);
-  console.log(`→ Running deep review...\n`);
-
   const result = await deepReview(summary);
 
-  // 5. Cache, log, and print
+  // 5. Cache and log
   setCachedReview(hash, { changed: true, summary, ...result });
   logReview({ summary, ...result });
-
-  console.log(renderReview({
-    ts: new Date().toISOString(),
-    project: basename(process.cwd()),
-    tag: "REVIEW",
-    summary,
-    ...result,
-  }));
 }
 
 main().catch((err) => {
-  console.error("Reviewer agent failed:", err.message);
+  logError("fatal", `Reviewer agent failed: ${err.message}`, err.stack);
   // Exit 0 so a hook failure never blocks Claude Code
   process.exit(0);
 });
