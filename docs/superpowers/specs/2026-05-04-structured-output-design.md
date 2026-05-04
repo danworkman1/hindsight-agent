@@ -48,9 +48,9 @@ The `deepReview()` system prompt is updated to require this JSON shape. The exis
 
 **Field rules:**
 - `verdict` — always present, one of three values
-- `prose` — always present, full review text as today
-- `files` — always present, empty array `[]` for `clean` verdict
-- `suggestions` — always present, empty array `[]` for `clean` verdict only; may be populated for `minor` and `worth_refactoring`
+- `prose` — present for `minor` and `worth_refactoring`; omitted (or empty string) for `clean`
+- `files` — always present, empty array `[]` for `clean` and `minor` verdicts
+- `suggestions` — only populated for `worth_refactoring`; empty array `[]` for `clean` and `minor`
 - Line numbers in `suggestions` are best-effort; prose is authoritative if they conflict
 
 ---
@@ -108,14 +108,25 @@ The implementation works but two areas could be tightened...
 ────────────────────────────────────────────────
 ```
 
-**clean entry:**
+**minor entry:**
 ```
 [2026-05-04T09:12:33Z] [my-project] [REVIEW] Added auth middleware
 
-Verdict: clean — The implementation is well-scoped and idiomatic.
+Verdict: minor suggestions
+
+The implementation is solid. One small thing: the error message on
+line 23 could be more descriptive, but it's not worth acting on.
 ```
 
-`minor` entries follow the `worth_refactoring` format (prose + suggestion cards) but use `Verdict: minor suggestions` as the header. They are logged but not surfaced differently from `clean` in the current phase — the distinction is preserved for future use.
+**clean entry:**
+```
+[2026-05-04T09:12:33Z] [my-project] [REVIEW] Added auth middleware — clean
+```
+
+Rendering rules by verdict:
+- `worth_refactoring` — verdict header + suggestion cards + prose
+- `minor` — verdict header + prose only (no cards; not worth acting on, keep log lean)
+- `clean` — single line, no prose, no cards
 
 ---
 
