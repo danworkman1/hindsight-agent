@@ -225,7 +225,7 @@ rm review-cache.json
 - **Cache** grows unbounded under normal use; soft cap at 5MB triggers eviction down to the 1000 most recent entries
 - **`process.cwd()`** of the hook process is the project Claude Code was working in, so `git diff` "just works"
 - **Untracked files** are included in the hash and the review (uncommitted new files would otherwise be invisible to `git diff`)
-- **Triage parse failures** are logged to stderr but not cached, so retries can recover
+- **Triage parse failures** are recorded in `reviews.log` but not cached, so retries can recover
 - **Non-git directories** are detected and skipped cleanly (the agent needs git to operate)
 
 ## Roadmap: feedback mode
