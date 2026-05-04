@@ -243,12 +243,16 @@ process.exit(0);  // advisory — review goes to log only
 
 // Feedback mode:
 if (verdict === "worth_refactoring") {
-  console.error(review);
-  process.exit(2);  // Claude Code receives the review and acts on it
+  console.error(
+    `Hindsight flagged a potential refactor:\n\n${review}\n\n` +
+    `Reply with: \`show\` to see the proposed diff, \`apply\` to implement it, ` +
+    `or describe what you'd like to do instead.`
+  );
+  process.exit(2);  // Claude Code surfaces the prompt and waits for the user
 }
 ```
 
-Claude Code reads the review, typically responds with *"You're right, let me clean that up"*, and applies the changes itself.
+Only `worth_refactoring` triggers the prompt — `clean` and `minor` verdicts stay log-only so the user isn't interrupted for low-signal reviews. The question is phrased *as* the stderr message, so Claude Code handles the branching in-conversation (no separate UI required).
 
 ### Prerequisites before enabling
 
