@@ -222,27 +222,21 @@ rm review-cache.json
 
 Currently the agent is advisory — you read the log and decide what to act on. The planned next phase is **feedback mode**, where reviews are fed back into Claude Code automatically.
 
-### How it would work
+### How it works (built, disabled by default)
 
-Claude Code's Stop hook protocol allows hooks to "block" by exiting with code 2 and writing to stderr. Anything written to stderr is fed back into the conversation as if the user had said it. So the change is:
+`surface.js` is a Stop-hook entry point that reads the cache populated by the post-commit pipeline. When it finds an unread `worth_refactoring` review for HEAD, it writes the review to stderr and exits 2 — the Claude Code Stop hook protocol for surfacing a prompt back into the conversation. It marks the review as surfaced so it only fires once per commit.
 
-```javascript
-// Currently:
-console.log(review);
-process.exit(0);  // advisory — review goes to log only
+It is gated behind `HINDSIGHT_FEEDBACK_MODE=on` so the code ships now and activates later.
 
-// Feedback mode:
-if (verdict === "worth_refactoring") {
-  console.error(
-    `Hindsight flagged a potential refactor:\n\n${review}\n\n` +
-    `Reply with: \`show\` to see the proposed diff, \`apply\` to implement it, ` +
-    `or describe what you'd like to do instead.`
-  );
-  process.exit(2);  // Claude Code surfaces the prompt and waits for the user
-}
-```
+### Activation
 
-Only `worth_refactoring` triggers the prompt — `clean` and `minor` verdicts stay log-only so the user isn't interrupted for low-signal reviews. The question is phrased *as* the stderr message, so Claude Code handles the branching in-conversation (no separate UI required).
+When you've collected enough log data to trust the post-commit pipeline:
+
+1. Add the Stop-hook entry to `~/.claude/settings.json` (snippet in `scripts/install-hook.sh`)
+2. Set `export HINDSIGHT_FEEDBACK_MODE=on` in your shell profile
+3. Restart Claude Code
+
+Until both are in place, `surface.js` is a no-op even if the Stop hook is wired.
 
 ### Defer-to-worktree option
 

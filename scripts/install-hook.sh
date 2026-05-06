@@ -35,3 +35,31 @@ EOF
 chmod +x "$HOOK_PATH"
 echo "Installed: $HOOK_PATH"
 echo "Reviews will append to: $HINDSIGHT_DIR/reviews.log"
+
+# ----------------------------------------------------------------------------
+# Optional: feedback mode (DISABLED by default).
+# Uncomment the block below AND set HINDSIGHT_FEEDBACK_MODE=on in your shell
+# profile when you're ready to have unread "worth_refactoring" reviews
+# surfaced back into Claude Code automatically.
+#
+# Add to your Claude Code settings.json (~/.claude/settings.json):
+#
+# {
+#   "hooks": {
+#     "Stop": [
+#       {
+#         "matcher": "",
+#         "hooks": [
+#           {
+#             "type": "command",
+#             "command": "node /absolute/path/to/hindsight-agent/surface.js"
+#           }
+#         ]
+#       }
+#     ]
+#   }
+# }
+#
+# Then in your shell profile:
+#   export HINDSIGHT_FEEDBACK_MODE=on
+# ----------------------------------------------------------------------------
