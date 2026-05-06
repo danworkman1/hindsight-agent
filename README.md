@@ -1,8 +1,8 @@
 # hindsight
 
-A post-implementation code review agent that runs automatically after [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) finishes a task. It reviews the changes with fresh eyes and asks: *now that we have a working solution, is there a cleaner approach?*
+A post-implementation code review agent that runs automatically after each `git commit`. It reviews the changes with fresh eyes and asks: *now that we have a working solution, is there a cleaner approach?*
 
-Currently runs in **advisory mode** — reviews are appended to a log file you tail in a side terminal. The agent never blocks or modifies your Claude Code workflow.
+Currently runs in **advisory mode** — reviews are appended to a log file you tail in a side terminal. The agent never blocks your workflow.
 
 ## Why?
 
@@ -13,35 +13,41 @@ That's hindsight: a separate agent, with its own system prompt and its own tools
 ## How it works
 
 ```
-Claude Code finishes a task
-        │
-        ▼
-   Stop hook fires
-        │
-        ▼
-  Hash the working tree
-        │
-   ┌────┴────┐
-   ▼         ▼
- cached?   miss?
-   │         │
-   │         ▼
-   │     Phase 1: Triage (Haiku)
-   │     Was source code added or refactored?
-   │         │
-   │         ▼
-   │     Phase 2: Deep review (Sonnet)
-   │     Is there a cleaner solution now?
-   │         │
-   └─────────┴──► Append to reviews.log
+git commit
+    │
+    ▼
+post-commit hook fires
+    │
+    ▼
+Read commit metadata (branch, message, SHA)
+    │
+    ▼
+Skip rules (main branch, WIP, [no-review], cap=3)
+    │
+    ▼
+Hash HEAD~1..HEAD diff
+    │
+┌───┴───┐
+▼       ▼
+cached?  miss?
+    │       │
+    │       ▼
+    │   Phase 1: Triage (Haiku)
+    │       │
+    │       ▼
+    │   Phase 2: Deep review (Sonnet)
+    │   with prior review on this branch as context
+    │       │
+    └───────┴──► Append to reviews.log
 ```
 
-1. **Stop hook fires** when Claude Code finishes responding
-2. **Hash the working tree** (`git diff HEAD` + untracked files)
-3. **Cache check** — if we've reviewed this exact state, replay the cached verdict and exit
-4. **Phase 1 (triage)** — was source code actually added or refactored? Cheap Haiku call
-5. **Phase 2 (deep review)** — only if triage says yes. Sonnet call that looks for cleaner solutions
-6. **Cache the result and append to the log**
+1. **Post-commit hook fires** when you `git commit`
+2. **Skip rules check** — main/master, WIP messages, `[no-review]` tag, or branch cap (3 reviews) short-circuit before any model call
+3. **Hash the commit diff** (`HEAD~1..HEAD`, doc files excluded)
+4. **Cache check** — if we've reviewed this exact diff, replay the cached verdict and exit
+5. **Phase 1 (triage)** — was source code actually added or refactored? Cheap Haiku call
+6. **Phase 2 (deep review)** — only if triage says yes. Sonnet call with the prior review on this branch (if any) as context, so the model reassesses rather than relitigates
+7. **Cache the result and append to the log**
 
 Every run produces a log entry, even skips. The log is the single source of truth for what the agent has done.
 
@@ -95,44 +101,24 @@ Expected output: triage runs, then either a skip message or a full review depend
 
 > **If you use a Node version manager** (fnm, nvm, asdf, volta), `node` may not be on the PATH that Claude Code uses to spawn hooks. You can find your Node binary's absolute path with `which node` and use that explicitly in step 3 below.
 
-### 3. Wire it to Claude Code
+### 3. Install the post-commit hook
 
-Edit your Claude Code settings — either:
+For each repository where you want hindsight to run, install the post-commit hook:
 
-- **`~/.claude/settings.json`** (global, applies everywhere)
-- **`<project>/.claude/settings.json`** (per-project, only that project)
-
-Add the `Stop` hook:
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /absolute/path/to/hindsight-agent/index.js"
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+cd /path/to/your/project
+/path/to/hindsight-agent/scripts/install-hook.sh
 ```
 
-Replace `/absolute/path/to/hindsight-agent/index.js` with the real path. If you're using a Node version manager, replace `node` with the absolute path to the binary too:
+This writes `.git/hooks/post-commit` and makes it executable. The hook detaches the agent so `git commit` returns immediately.
 
-```json
-"command": "/path/to/your/node /absolute/path/to/hindsight-agent/index.js"
+If you use a Node version manager and `node` isn't on the default PATH, set `HINDSIGHT_NODE` first:
+
+```bash
+HINDSIGHT_NODE=/absolute/path/to/node /path/to/hindsight-agent/scripts/install-hook.sh
 ```
 
-If `settings.json` already exists, **merge** the `hooks` block in rather than replacing the file.
-
-### 4. Restart Claude Code
-
-Quit and relaunch so the new settings load.
+To uninstall: `rm .git/hooks/post-commit`.
 
 ## Daily workflow
 
@@ -142,7 +128,7 @@ Open a side terminal and tail the review log:
 tail -f /path/to/hindsight-agent/reviews.log
 ```
 
-Then work in Claude Code as normal. Every time it finishes a task, a new entry streams into your tail:
+Then commit as normal. Every time you commit, a new entry streams into your tail:
 
 ```
 [2026-05-03T10:15:11Z] [my-project] [skip] no changes in working tree
@@ -199,7 +185,7 @@ Triage uses Haiku (fast and cheap), deep review uses Sonnet. If you want to use 
 
 ```
 hindsight/
-├── index.js              ← entry point invoked by the Stop hook
+├── index.js              ← entry point invoked by the post-commit hook
 ├── lib/
 │   ├── agent-loop.js     ← generic agent loop (model + tools)
 │   ├── cache.js          ← diff hashing + on-disk cache
@@ -223,10 +209,14 @@ rm review-cache.json
 
 - **Exits 0 on errors** — a failed review never blocks Claude Code
 - **Cache** grows unbounded under normal use; soft cap at 5MB triggers eviction down to the 1000 most recent entries
-- **`process.cwd()`** of the hook process is the project Claude Code was working in, so `git diff` "just works"
+- **`process.cwd()`** of the hook process is the project you committed in, so `git diff` "just works"
 - **Untracked files** are included in the hash and the review (uncommitted new files would otherwise be invisible to `git diff`)
 - **Triage parse failures** are recorded in `reviews.log` but not cached, so retries can recover
 - **Non-git directories** are detected and skipped cleanly (the agent needs git to operate)
+- **Branch cap**: 3 reviews per branch. After that, commits log a `[CAP]` line and skip the model call. Run `node /path/to/index.js --force` to override.
+- **Skipped commit messages**: `wip`, `WIP`, `[no-review]`
+- **Skipped branches**: `main`, `master` (squash-merges and CI commits don't burn reviews)
+- **Prior review context**: when re-reviewing a branch, the prior verdict and suggestions are fed into the prompt so the model reassesses rather than repeating itself
 
 ## Roadmap: feedback mode
 
@@ -253,6 +243,16 @@ if (verdict === "worth_refactoring") {
 ```
 
 Only `worth_refactoring` triggers the prompt — `clean` and `minor` verdicts stay log-only so the user isn't interrupted for low-signal reviews. The question is phrased *as* the stderr message, so Claude Code handles the branching in-conversation (no separate UI required).
+
+### Defer-to-worktree option
+
+Alongside `show` and `apply`, the prompt should offer a third path: **defer the refactor to a separate worktree**. When chosen, Claude Code creates a new git worktree (on a fresh branch) and drops a markdown file at its root containing the verdict, prose, affected files, and the full suggestions list — a self-contained brief that a future session (or a later sit-down) can pick up cold.
+
+The point is to keep the current session focused. The user agrees the refactor is worth doing but doesn't want to context-switch right now; the worktree+md captures everything needed to act on it later without losing the hindsight agent's reasoning. Open questions to resolve when building this:
+
+- Where worktrees live (sibling directory vs. configurable path)
+- Branch naming convention (e.g. `hindsight/<short-summary>`)
+- Whether the md file is the only artifact or whether the suggestions are also pre-applied as an unstaged diff in the worktree
 
 ### Prerequisites before enabling
 
