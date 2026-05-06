@@ -54,7 +54,7 @@ function main() {
     `Reply with: \`show\` to see the proposed diff, \`apply\` to implement it, ` +
     `or describe what you'd like to do instead.`;
 
-  process.stderr.write(message);
+  process.stderr.write(message + "\n");
   process.exit(2);
 }
 

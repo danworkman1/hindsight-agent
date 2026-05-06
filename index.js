@@ -17,42 +17,15 @@ import { shouldSkip, REVIEW_CAP } from "./lib/skip-rules.js";
 import { formatPriorReviewForPrompt } from "./lib/prior-review.js";
 import { logReview, logSkip, logError, logCapHit } from "./lib/logger.js";
 import { extractJsonObject } from "./lib/parse.js";
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from "fs";
-import { tmpdir } from "os";
-import { createHash } from "crypto";
-import { join } from "path";
-
-function getLockPath() {
-  const repoKey = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
-  return join(tmpdir(), `hindsight-${repoKey}.lock`);
-}
-
-function acquireLock() {
-  const path = getLockPath();
-  if (existsSync(path)) {
-    const age = Date.now() - parseInt(readFileSync(path, "utf-8") || "0", 10);
-    if (age < 5 * 60 * 1000) return false;
-  }
-  writeFileSync(path, String(Date.now()), "utf-8");
-  return true;
-}
-
-function releaseLock() {
-  try {
-    unlinkSync(getLockPath());
-  } catch {
-    /* already gone */
-  }
-}
+import { acquireLock, releaseLock } from "./lib/lock.js";
 
 // ---------------------------------------------------------------------------
 // Commit metadata — branch, message, and SHA of the latest commit.
 // ---------------------------------------------------------------------------
-function readCommitMetadata() {
+function readCommitMetadata(sha) {
   try {
     const branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8" }).trim();
     const message = execSync("git log -1 --pretty=%B", { encoding: "utf-8" }).trim();
-    const sha = execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
     return { branch, message, sha };
   } catch {
     return { branch: "", message: "", sha: "" };
@@ -174,12 +147,6 @@ Rules:
 async function main() {
   const force = process.argv.includes("--force");
 
-  const meta = readCommitMetadata();
-  if (!meta.branch) {
-    logSkip("skip", "not a git repo");
-    return;
-  }
-
   const diffResult = computeCommitRangeHash();
   if (diffResult.status === "not_a_repo") {
     logSkip("skip", "not a git repo");
@@ -191,6 +158,12 @@ async function main() {
   }
   if (diffResult.status === "no_changes") {
     logSkip("skip", "commit had no non-doc changes");
+    return;
+  }
+
+  const meta = readCommitMetadata(diffResult.commitSha);
+  if (!meta.branch) {
+    logSkip("skip", "could not read branch");
     return;
   }
 
