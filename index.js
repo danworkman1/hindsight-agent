@@ -17,6 +17,33 @@ import { shouldSkip, REVIEW_CAP } from "./lib/skip-rules.js";
 import { formatPriorReviewForPrompt } from "./lib/prior-review.js";
 import { logReview, logSkip, logError, logCapHit } from "./lib/logger.js";
 import { extractJsonObject } from "./lib/parse.js";
+import { existsSync, writeFileSync, readFileSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
+import { createHash } from "crypto";
+import { join } from "path";
+
+function getLockPath() {
+  const repoKey = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
+  return join(tmpdir(), `hindsight-${repoKey}.lock`);
+}
+
+function acquireLock() {
+  const path = getLockPath();
+  if (existsSync(path)) {
+    const age = Date.now() - parseInt(readFileSync(path, "utf-8") || "0", 10);
+    if (age < 5 * 60 * 1000) return false;
+  }
+  writeFileSync(path, String(Date.now()), "utf-8");
+  return true;
+}
+
+function releaseLock() {
+  try {
+    unlinkSync(getLockPath());
+  } catch {
+    /* already gone */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Commit metadata — branch, message, and SHA of the latest commit.
@@ -236,8 +263,17 @@ async function main() {
   logReview({ summary, ...result });
 }
 
-main().catch((err) => {
-  logError("fatal", `Reviewer agent failed: ${err.message}`, err.stack);
-  // Exit 0 so a hook failure never blocks Claude Code
+(async () => {
+  if (!acquireLock()) {
+    logSkip("skip", "another hindsight run is in progress");
+    process.exit(0);
+  }
+  try {
+    await main();
+  } catch (err) {
+    logError("fatal", `Reviewer agent failed: ${err.message}`, err.stack);
+  } finally {
+    releaseLock();
+  }
   process.exit(0);
-});
+})();
