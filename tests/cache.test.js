@@ -91,3 +91,43 @@ test("getBranchReviewCount returns 0 for unknown branch", () => {
 test("getLastBranchReview returns null for unknown branch", () => {
   assert.equal(getLastBranchReview("nope"), null);
 });
+
+test("getLastBranchReview returns object with hash field", () => {
+  setCachedReview("hash-C", {
+    changed: true,
+    summary: "x",
+    verdict: "clean",
+    prose: "",
+    files: [],
+    suggestions: [],
+    branch: "feat/z",
+    commitSha: "sha-z",
+  });
+  const last = getLastBranchReview("feat/z");
+  assert.equal(last.hash, "hash-C");
+  assert.equal(last.commitSha, "sha-z");
+});
+
+test("setCachedReview with duplicate hash does not double-push to branchIndex", () => {
+  setCachedReview("hash-D", {
+    changed: true,
+    summary: "x",
+    verdict: "clean",
+    prose: "",
+    files: [],
+    suggestions: [],
+    branch: "feat/dedupe",
+    commitSha: "sha1",
+  });
+  setCachedReview("hash-D", {
+    changed: true,
+    summary: "x",
+    verdict: "clean",
+    prose: "",
+    files: [],
+    suggestions: [],
+    branch: "feat/dedupe",
+    commitSha: "sha1",
+  });
+  assert.equal(getBranchReviewCount("feat/dedupe"), 1);
+});
