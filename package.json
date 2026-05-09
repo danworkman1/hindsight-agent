@@ -1,16 +1,47 @@
 {
   "name": "hindsight-agent",
   "version": "0.1.0",
-  "description": "Post-implementation code review agent triggered by Claude Code's Stop hook",
+  "description": "Post-implementation code review agent triggered by a git post-commit hook. Pairs with Claude Code.",
   "type": "module",
   "main": "index.js",
   "bin": {
-    "hindsight": "./index.js"
+    "hindsight-agent": "./index.js"
   },
+  "files": [
+    "index.js",
+    "surface.js",
+    "lib/",
+    "bin/",
+    "scripts/probe-node.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node index.js",
     "test": "node --test"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "code-review",
+    "git-hook",
+    "post-commit",
+    "anthropic",
+    "agent"
+  ],
+  "author": "Daniel Workman",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dwbra/hindsight-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dwbra/hindsight-agent/issues"
+  },
+  "homepage": "https://github.com/dwbra/hindsight-agent#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0"
   }

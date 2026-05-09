@@ -18,6 +18,7 @@ import { formatPriorReviewForPrompt } from "./lib/prior-review.js";
 import { logReview, logSkip, logError, logCapHit } from "./lib/logger.js";
 import { extractJsonObject } from "./lib/parse.js";
 import { acquireLock, releaseLock } from "./lib/lock.js";
+import { init, uninstall } from "./lib/install.js";
 
 // ---------------------------------------------------------------------------
 // Commit metadata — branch, message, and SHA of the latest commit.
@@ -265,6 +266,33 @@ async function main({ force, base, triageModel, reviewModel }) {
 
 (async () => {
   const argv = process.argv;
+  const sub = argv[2];
+
+  if (sub === "init") {
+    init();
+    process.exit(0);
+  }
+  if (sub === "uninstall") {
+    uninstall();
+    process.exit(0);
+  }
+  if (sub === "--help" || sub === "-h" || sub === "help") {
+    process.stdout.write(
+      `hindsight-agent — post-commit code review for Claude Code\n\n` +
+        `Usage:\n` +
+        `  npx hindsight-agent init        Install post-commit hook in this git repo\n` +
+        `  npx hindsight-agent uninstall   Remove the post-commit hook\n` +
+        `  npx hindsight-agent             Run a review (invoked by the hook)\n\n` +
+        `Flags (review mode):\n` +
+        `  --force                         Bypass triage and cache\n` +
+        `  --base <ref>                    Diff against <ref>..HEAD (default HEAD~1)\n` +
+        `  --path <dir>                    Run as if launched in <dir>\n` +
+        `  --triage-model <name>           haiku|sonnet|opus or raw model id\n` +
+        `  --review-model <name>           haiku|sonnet|opus or raw model id\n`
+    );
+    process.exit(0);
+  }
+
   const force = argv.includes("--force");
   const base = getArg(argv, "--base");
   const pathArg = getArg(argv, "--path");

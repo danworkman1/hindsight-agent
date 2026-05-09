@@ -1,4 +1,4 @@
-# hindsight
+# hindsight-agent
 
 A post-implementation code review agent that runs automatically after each `git commit`. It reviews the changes with fresh eyes and asks: *now that we have a working solution, is there a cleaner approach?*
 
@@ -59,19 +59,15 @@ Every run produces a log entry, even skips. The log is the single source of trut
 
 ## Install
 
-```bash
-git clone https://github.com/dwbra/hindsight-agent.git
-cd hindsight-agent
-pnpm install        # or npm install / yarn
-```
-
-### Make `hindsight` available globally
+Install once, globally:
 
 ```bash
-pnpm link --global
+npm install -g hindsight-agent
+# or: pnpm add -g hindsight-agent
+# or: yarn global add hindsight-agent
 ```
 
-This gives you a `hindsight` command anywhere on your machine. You can now run `hindsight` from inside any git repo, or point it at one with `--path`.
+You can also skip the global install and use `npx hindsight-agent ...` for everything below.
 
 ## Setup
 
@@ -89,53 +85,72 @@ Open a new terminal and verify:
 
 ```bash
 echo $ANTHROPIC_API_KEY
-node -e 'console.log(process.env.ANTHROPIC_API_KEY ? "OK" : "missing")'
 ```
 
-Both should succeed.
-
-### 2. Test it manually
-
-Run a manual review against any branch with code changes:
-
-```bash
-# From inside a repo
-hindsight --force --base main
-
-# Or point at a repo from anywhere
-hindsight --path /path/to/your/project --force --base main
-```
-
-Expected output: triage runs, then either a skip message or a full review depending on whether code changed.
-
-### 3. Install the post-commit hook
-
-For each repository where you want hindsight to run automatically after commits:
+### 2. Install the post-commit hook in a repo
 
 ```bash
 cd /path/to/your/project
-/path/to/hindsight-agent/scripts/install-hook.sh
+npx hindsight-agent init
 ```
 
-This writes `.git/hooks/post-commit` and makes it executable. The hook detaches the agent so `git commit` returns immediately.
+This:
 
-The hook (and the Stop hook in step 4) invoke `bin/run-with-node.sh`, a wrapper that resolves a usable `node` binary at fire time across fnm, nvm, volta, asdf, mise, homebrew, and `/usr/bin` — so you don't need to bake a path in, and config keeps working when you switch or upgrade managers. The installer probes the wrapper up-front and prints the resolved binary; if it picks wrong, override with `HINDSIGHT_NODE`:
+- writes `.git/hooks/post-commit` (detached so `git commit` returns immediately)
+- adds `reviews.log` and `review-cache.json` to your `.gitignore`
+- prints the exact `tail -f` command for this repo
+- prints an optional Stop-hook snippet for `~/.claude/settings.json` (feedback mode)
+
+The hook invokes `bin/run-with-node.sh`, a wrapper that resolves a usable `node` binary at fire time across fnm, nvm, volta, asdf, mise, homebrew, and `/usr/bin` — so the hook keeps working when you upgrade or switch node managers. If it picks wrong, override with `HINDSIGHT_NODE=/absolute/path/to/node` before running `init`.
+
+### 3. Tail the log
+
+In a side terminal:
 
 ```bash
-HINDSIGHT_NODE=/absolute/path/to/node /path/to/hindsight-agent/scripts/install-hook.sh
+tail -f reviews.log
 ```
 
-To uninstall: `rm .git/hooks/post-commit`.
+Now every commit you make in this repo streams a review entry into your tail. That's it.
 
 ### 4. (Optional) Enable feedback mode
 
-After installing, the script prints a ready-to-paste Stop-hook block for `~/.claude/settings.json`. Add it and restart Claude Code to have `worth_refactoring` reviews surfaced back into the active session — see [Feedback mode](#feedback-mode) below.
+After `init` finishes, paste the printed Stop-hook block into `~/.claude/settings.json` and restart Claude Code. Worth-refactoring reviews will be surfaced back into the active Claude Code session — see [Feedback mode](#feedback-mode).
+
+### Uninstall
+
+From the repo:
+
+```bash
+npx hindsight-agent uninstall
+```
+
+Removes the post-commit hook. Your `reviews.log` and `review-cache.json` are kept; delete them yourself if you no longer want them.
+
+### Test it without committing
+
+```bash
+npx hindsight-agent --force --base main
+```
+
+Runs a one-off review of the current branch against `main`, bypassing cache and skip rules.
 
 ## CLI reference
 
 ```
-hindsight [options]
+hindsight-agent [subcommand] [options]
 ```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `init` | Install the post-commit hook in the current git repo |
+| `uninstall` | Remove the post-commit hook from the current git repo |
+| `help` | Print usage |
+| _(none)_ | Run a review (this is what the hook invokes) |
+
+### Review-mode flags
 
 | Flag | Description |
 |------|-------------|
@@ -151,19 +166,19 @@ hindsight [options]
 
 ```bash
 # Review the last commit in cwd (same as the post-commit hook)
-hindsight
+hindsight-agent
 
 # Force a review of everything on this branch vs main
-hindsight --force --base main
+hindsight-agent --force --base main
 
 # Point at a different repo
-hindsight --path ~/coding/my-project --force --base main
+hindsight-agent --path ~/coding/my-project --force --base main
 
 # Use Opus for the deep review pass
-hindsight --force --base main --review-model opus
+hindsight-agent --force --base main --review-model opus
 
 # Use Haiku for everything (cheapest)
-hindsight --force --triage-model haiku --review-model haiku
+hindsight-agent --force --triage-model haiku --review-model haiku
 
 # Test without a real commit (empty commit)
 git commit --allow-empty -m "test: trigger hindsight"
@@ -171,10 +186,10 @@ git commit --allow-empty -m "test: trigger hindsight"
 
 ## Daily workflow
 
-Open a side terminal and tail the review log:
+Open a side terminal in the repo and tail the review log:
 
 ```bash
-tail -f /path/to/hindsight-agent/reviews.log
+tail -f reviews.log
 ```
 
 Then commit as normal. Every time you commit, a new entry streams into your tail:
@@ -216,31 +231,9 @@ grep "$(date -u +%Y-%m-%d)" reviews.log
 grep -E "^\[2[0-9]" reviews.log
 ```
 
-## File layout
-
-```
-hindsight/
-├── index.js              ← entry point / CLI
-├── surface.js            ← Claude Code Stop-hook entry (feedback mode)
-├── bin/
-│   └── run-with-node.sh  ← resolves node at hook-fire time (fnm/nvm/volta/asdf/mise/brew)
-├── lib/
-│   ├── agent-loop.js     ← generic agent loop (model + tools)
-│   ├── cache.js          ← diff hashing + on-disk cache
-│   ├── lock.js           ← prevents concurrent runs
-│   ├── logger.js         ← append-only review log
-│   ├── parse.js          ← JSON extraction from model output
-│   ├── prior-review.js   ← formats prior branch review for context
-│   ├── skip-rules.js     ← branch/message skip logic
-│   └── tools.js          ← tool schemas and handlers
-├── scripts/
-│   ├── install-hook.sh   ← writes .git/hooks/post-commit and prints Stop-hook config
-│   └── probe-node.js     ← used by the installer to verify node resolution
-├── review-cache.json     ← created on first run (gitignored)
-└── reviews.log           ← created on first run (gitignored)
-```
-
 ## Resetting
+
+In the repo:
 
 ```bash
 # Wipe the cache (forces re-review of everything)
@@ -268,7 +261,7 @@ rm review-cache.json
 
 `surface.js` is a Claude Code Stop-hook entry point. When the post-commit pipeline lands a `worth_refactoring` review for the current HEAD, surface writes it to stderr and exits 2 — Claude Code's protocol for injecting a prompt back into the conversation. Each review is surfaced at most once (tracked via the `surfaced` flag in the cache). The hook respects `stop_hook_active` so it can't recurse on its own output.
 
-Wire it up by pasting the Stop-hook block printed by `scripts/install-hook.sh` into `~/.claude/settings.json`, then restart Claude Code. The block uses `bin/run-with-node.sh` so it picks up the same auto-resolved node as the post-commit hook.
+Wire it up by pasting the Stop-hook block printed by `npx hindsight-agent init` into `~/.claude/settings.json`, then restart Claude Code. The block uses `bin/run-with-node.sh` so it picks up the same auto-resolved node as the post-commit hook.
 
 ### Defer-to-worktree (planned)
 
