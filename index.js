@@ -1,33 +1,34 @@
 #!/usr/bin/env node
 // review-agent.js
-// Entry point invoked by Claude Code's Stop hook (or run manually for testing).
+// Entry point invoked after each commit.
 //
 // Flow:
-//   1. Compute a hash of the current working-tree state
-//   2. If we've reviewed this exact state before, replay the cached result and exit
+//   1. Compute a hash of the HEAD~1..HEAD commit diff
+//   2. If we've reviewed this exact commit range before, replay the cached result and exit
 //   3. Otherwise, run Phase 1 (triage): was code actually changed?
 //   4. If yes, run Phase 2 (deep review): is there a cleaner solution?
 //   5. Cache the result and append it to reviews.log
 
-import { readFileSync } from "fs";
+import { execSync } from "child_process";
 import { runAgent, MODELS } from "./lib/agent-loop.js";
-import { tools, toolHandlers } from "./lib/tools.js";
-import { computeDiffHash, getCachedReview, setCachedReview } from "./lib/cache.js";
-import { logReview, logSkip, logError } from "./lib/logger.js";
+import { tools, createToolHandlers } from "./lib/tools.js";
+import { computeCommitRangeHash, getCachedReview, setCachedReview, getBranchReviewCount, getLastBranchReview } from "./lib/cache.js";
+import { shouldSkip, REVIEW_CAP } from "./lib/skip-rules.js";
+import { formatPriorReviewForPrompt } from "./lib/prior-review.js";
+import { logReview, logSkip, logError, logCapHit } from "./lib/logger.js";
 import { extractJsonObject } from "./lib/parse.js";
+import { acquireLock, releaseLock } from "./lib/lock.js";
 
 // ---------------------------------------------------------------------------
-// Stdin handling — the Stop hook pipes a JSON object describing the session.
+// Commit metadata — branch, message, and SHA of the latest commit.
 // ---------------------------------------------------------------------------
-function readHookInput() {
-  if (process.stdin.isTTY) return {};
-
+function readCommitMetadata(sha) {
   try {
-    const raw = readFileSync(0, "utf-8");
-    if (!raw.trim()) return {};
-    return JSON.parse(raw);
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8" }).trim();
+    const message = execSync("git log -1 --pretty=%B", { encoding: "utf-8" }).trim();
+    return { branch, message, sha };
   } catch {
-    return {};
+    return { branch: "", message: "", sha: "" };
   }
 }
 
@@ -35,7 +36,7 @@ function readHookInput() {
 // Phase 1: Triage. Cheap call. Was code added or refactored?
 // Returns { changed: boolean, summary: string }
 // ---------------------------------------------------------------------------
-async function triage() {
+async function triage(toolHandlers, model = MODELS.HAIKU) {
   const system = `You are a code change detector. Use the available tools to inspect the working tree and determine whether source code was added or refactored.
 
 Your ENTIRE response must be a single JSON object and nothing else. No prose before, no prose after, no markdown fences.
@@ -59,7 +60,7 @@ Rules:
     tools,
     toolHandlers,
     maxIterations: 5,
-    model: MODELS.HAIKU,
+    model,
   });
 
   const parsed = extractJsonObject(result);
@@ -79,7 +80,9 @@ Rules:
 // Phase 2: Deep review. Only runs when triage says code changed.
 // Returns a structured object { verdict, prose, files, suggestions }
 // ---------------------------------------------------------------------------
-async function deepReview(triageSummary) {
+async function deepReview(triageSummary, priorReview, toolHandlers, model = MODELS.SONNET) {
+  const priorContext = formatPriorReviewForPrompt(priorReview);
+
   const system = `You are a senior engineer doing a post-implementation review. The code WORKS — your job is not to find bugs, but to ask: now that we have a working solution and the full picture, is there a cleaner approach?
 
 Look for:
@@ -111,7 +114,7 @@ Rules:
 - verdict "clean": solution is good. prose = "". files = []. suggestions = [].
 - verdict "minor": small notes not worth acting on. prose = full explanation. files = affected files. suggestions = [].
 - verdict "worth_refactoring": meaningful improvement available. prose = full explanation. files = affected files. suggestions = one entry per distinct change.
-- Line numbers in suggestions are best-effort — prose is authoritative if they conflict.`;
+- Line numbers in suggestions are best-effort — prose is authoritative if they conflict.${priorContext}`;
 
   const raw = await runAgent({
     system,
@@ -119,7 +122,7 @@ Rules:
     tools,
     toolHandlers,
     maxIterations: 15,
-    model: MODELS.SONNET,
+    model,
   });
 
   const parsed = extractJsonObject(raw);
@@ -141,26 +144,64 @@ Rules:
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-async function main() {
-  const hookInput = readHookInput(); // stop_hook_active will be used in feedback mode
+function parseModel(name) {
+  if (!name) return null;
+  const key = name.toLowerCase();
+  if (key === "haiku") return MODELS.HAIKU;
+  if (key === "sonnet") return MODELS.SONNET;
+  if (key === "opus") return MODELS.OPUS;
+  // Accept raw model IDs too
+  return name;
+}
 
-  // 1. Hash the current state
-  const diffResult = computeDiffHash();
+function getArg(argv, flag) {
+  const idx = argv.indexOf(flag);
+  return idx !== -1 ? argv[idx + 1] : null;
+}
 
+async function main({ force, base, triageModel, reviewModel }) {
+  const toolHandlers = createToolHandlers(base);
+
+  const diffResult = computeCommitRangeHash(base ?? undefined);
   if (diffResult.status === "not_a_repo") {
     logSkip("skip", "not a git repo");
     return;
   }
-
-  if (diffResult.status === "no_changes") {
-    logSkip("skip", "no changes in working tree");
+  if (diffResult.status === "no_parent") {
+    logSkip("skip", "initial commit has no parent to diff against");
+    return;
+  }
+  if (diffResult.status === "no_changes" && !force) {
+    logSkip("skip", "commit had no non-doc changes");
     return;
   }
 
-  const hash = diffResult.hash;
+  const meta = readCommitMetadata(diffResult.commitSha);
+  if (!meta.branch) {
+    logSkip("skip", "could not read branch");
+    return;
+  }
 
-  // 2. Cache check
-  const cached = getCachedReview(hash);
+  const reviewCount = getBranchReviewCount(meta.branch);
+
+  if (!force) {
+    const skipDecision = shouldSkip({
+      branch: meta.branch,
+      commitMessage: meta.message,
+      reviewCount,
+    });
+    if (skipDecision.skip) {
+      if (skipDecision.reason.startsWith("branch review cap")) {
+        logCapHit(meta.branch, reviewCount, REVIEW_CAP);
+      } else {
+        logSkip("skip", skipDecision.reason);
+      }
+      return;
+    }
+  }
+
+  const hash = diffResult.hash;
+  const cached = !force ? getCachedReview(hash) : null;
   if (cached) {
     if (cached.changed) {
       logReview({
@@ -177,37 +218,80 @@ async function main() {
     return;
   }
 
-  // 3. Triage
-  const { changed, summary } = await triage();
+  let summary;
+  if (force) {
+    summary = meta.message.split("\n")[0] || `force review of ${base ?? "HEAD"}..HEAD on ${meta.branch}`;
+    process.stderr.write(`hindsight: force mode — skipping triage, running deep review on ${meta.branch}\n`);
+    logSkip("force", `bypassing triage and cache — ${summary}`);
+  } else {
+    process.stderr.write(`hindsight: triaging ${meta.branch}...\n`);
+    const triageResult = await triage(toolHandlers, triageModel);
+    const triageFailed = triageResult.summary === "Could not parse triage output";
 
-  const triageFailed = summary === "Could not parse triage output";
-
-  if (!changed) {
-    // Don't cache parse failures — let the next run try again
-    if (!triageFailed) {
-      setCachedReview(hash, {
-        changed: false,
-        summary,
-        verdict: "clean",
-        prose: "",
-        files: [],
-        suggestions: [],
-      });
+    if (!triageResult.changed) {
+      if (!triageFailed) {
+        setCachedReview(hash, {
+          changed: false,
+          summary: triageResult.summary,
+          verdict: "clean",
+          prose: "",
+          files: [],
+          suggestions: [],
+          branch: meta.branch,
+          commitSha: meta.sha,
+        });
+      }
+      logSkip("skip", `triage said no — ${triageResult.summary}`);
+      process.stderr.write(`hindsight: skipped — ${triageResult.summary}\n`);
+      return;
     }
-    logSkip("skip", `triage said no — ${summary}`);
-    return;
+    summary = triageResult.summary;
   }
 
-  // 4. Deep review
-  const result = await deepReview(summary);
+  process.stderr.write(`hindsight: running deep review (${reviewModel})...\n`);
+  const priorReview = getLastBranchReview(meta.branch);
+  const result = await deepReview(summary, priorReview, toolHandlers, reviewModel);
 
-  // 5. Cache and log
-  setCachedReview(hash, { changed: true, summary, ...result });
+  setCachedReview(hash, {
+    changed: true,
+    summary,
+    ...result,
+    branch: meta.branch,
+    commitSha: meta.sha,
+  });
   logReview({ summary, ...result });
+  process.stderr.write(`hindsight: review complete — verdict: ${result.verdict}\n`);
 }
 
-main().catch((err) => {
-  logError("fatal", `Reviewer agent failed: ${err.message}`, err.stack);
-  // Exit 0 so a hook failure never blocks Claude Code
+(async () => {
+  const argv = process.argv;
+  const force = argv.includes("--force");
+  const base = getArg(argv, "--base");
+  const pathArg = getArg(argv, "--path");
+  const triageModel = parseModel(getArg(argv, "--triage-model")) ?? MODELS.HAIKU;
+  const reviewModel = parseModel(getArg(argv, "--review-model")) ?? MODELS.SONNET;
+
+  if (pathArg) {
+    try {
+      process.chdir(pathArg);
+    } catch (err) {
+      console.error(`hindsight: cannot chdir to ${pathArg}: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  if (!acquireLock()) {
+    logSkip("skip", "another hindsight run is in progress");
+    process.stderr.write("hindsight: another run is in progress, exiting\n");
+    process.exit(0);
+  }
+  try {
+    await main({ force, base, triageModel, reviewModel });
+  } catch (err) {
+    logError("fatal", `Reviewer agent failed: ${err.message}`, err.stack);
+    process.stderr.write(`hindsight: failed — ${err.message}\n`);
+  } finally {
+    releaseLock();
+  }
   process.exit(0);
-});
+})();
