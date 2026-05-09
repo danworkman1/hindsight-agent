@@ -108,8 +108,6 @@ hindsight --path /path/to/your/project --force --base main
 
 Expected output: triage runs, then either a skip message or a full review depending on whether code changed.
 
-> **If you use a Node version manager** (fnm, nvm, asdf, volta), `node` may not be on the PATH that git hooks use. You can find your Node binary's absolute path with `which node` and use that explicitly in step 3 below.
-
 ### 3. Install the post-commit hook
 
 For each repository where you want hindsight to run automatically after commits:
@@ -121,13 +119,17 @@ cd /path/to/your/project
 
 This writes `.git/hooks/post-commit` and makes it executable. The hook detaches the agent so `git commit` returns immediately.
 
-If you use a Node version manager and `node` isn't on the default PATH, set `HINDSIGHT_NODE` first:
+The hook (and the Stop hook in step 4) invoke `bin/run-with-node.sh`, a wrapper that resolves a usable `node` binary at fire time across fnm, nvm, volta, asdf, mise, homebrew, and `/usr/bin` — so you don't need to bake a path in, and config keeps working when you switch or upgrade managers. The installer probes the wrapper up-front and prints the resolved binary; if it picks wrong, override with `HINDSIGHT_NODE`:
 
 ```bash
 HINDSIGHT_NODE=/absolute/path/to/node /path/to/hindsight-agent/scripts/install-hook.sh
 ```
 
 To uninstall: `rm .git/hooks/post-commit`.
+
+### 4. (Optional) Enable feedback mode
+
+After installing, the script prints a ready-to-paste Stop-hook block for `~/.claude/settings.json`. Add it and restart Claude Code to have `worth_refactoring` reviews surfaced back into the active session — see [Feedback mode](#feedback-mode) below.
 
 ## CLI reference
 
@@ -219,6 +221,9 @@ grep -E "^\[2[0-9]" reviews.log
 ```
 hindsight/
 ├── index.js              ← entry point / CLI
+├── surface.js            ← Claude Code Stop-hook entry (feedback mode)
+├── bin/
+│   └── run-with-node.sh  ← resolves node at hook-fire time (fnm/nvm/volta/asdf/mise/brew)
 ├── lib/
 │   ├── agent-loop.js     ← generic agent loop (model + tools)
 │   ├── cache.js          ← diff hashing + on-disk cache
@@ -229,7 +234,8 @@ hindsight/
 │   ├── skip-rules.js     ← branch/message skip logic
 │   └── tools.js          ← tool schemas and handlers
 ├── scripts/
-│   └── install-hook.sh   ← writes .git/hooks/post-commit for a repo
+│   ├── install-hook.sh   ← writes .git/hooks/post-commit and prints Stop-hook config
+│   └── probe-node.js     ← used by the installer to verify node resolution
 ├── review-cache.json     ← created on first run (gitignored)
 └── reviews.log           ← created on first run (gitignored)
 ```
@@ -262,7 +268,7 @@ rm review-cache.json
 
 `surface.js` is a Claude Code Stop-hook entry point. When the post-commit pipeline lands a `worth_refactoring` review for the current HEAD, surface writes it to stderr and exits 2 — Claude Code's protocol for injecting a prompt back into the conversation. Each review is surfaced at most once (tracked via the `surfaced` flag in the cache). The hook respects `stop_hook_active` so it can't recurse on its own output.
 
-Wire it up by adding the Stop-hook block printed by `scripts/install-hook.sh` into `~/.claude/settings.json`, then restart Claude Code.
+Wire it up by pasting the Stop-hook block printed by `scripts/install-hook.sh` into `~/.claude/settings.json`, then restart Claude Code. The block uses `bin/run-with-node.sh` so it picks up the same auto-resolved node as the post-commit hook.
 
 ### Defer-to-worktree (planned)
 
