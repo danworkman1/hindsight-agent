@@ -2,13 +2,22 @@
 // surface.js
 // Stop-hook entry point. Surfaces an unread `worth_refactoring` review
 // for the current HEAD back to Claude Code via exit 2 + stderr.
-//
-// Disabled unless HINDSIGHT_FEEDBACK_MODE=on. When disabled, exits 0 silently
-// so installation can happen now and activation later.
 
 import { execSync } from "child_process";
+import { readFileSync } from "fs";
 import { getReviewByCommitSha, markSurfaced } from "./lib/cache.js";
 import { logSkip } from "./lib/logger.js";
+
+function readHookInput() {
+  if (process.stdin.isTTY) return {};
+  try {
+    const raw = readFileSync(0, "utf-8");
+    if (!raw.trim()) return {};
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
 
 function getHeadSha() {
   try {
@@ -19,27 +28,18 @@ function getHeadSha() {
 }
 
 function main() {
-  if (process.env.HINDSIGHT_FEEDBACK_MODE !== "on") {
-    process.exit(0);
-  }
+  // Recursion guard: Claude Code re-fires Stop hooks in response to its own
+  // reply to a prior Stop hook. Bail when re-entered.
+  const hookInput = readHookInput();
+  if (hookInput.stop_hook_active) process.exit(0);
 
   const sha = getHeadSha();
-  if (!sha) {
-    process.exit(0);
-  }
+  if (!sha) process.exit(0);
 
   const review = getReviewByCommitSha(sha);
-  if (!review) {
-    process.exit(0);
-  }
-
-  if (review.verdict !== "worth_refactoring") {
-    process.exit(0);
-  }
-
-  if (review.surfaced) {
-    process.exit(0);
-  }
+  if (!review) process.exit(0);
+  if (review.verdict !== "worth_refactoring") process.exit(0);
+  if (review.surfaced) process.exit(0);
 
   markSurfaced(review.hash);
 

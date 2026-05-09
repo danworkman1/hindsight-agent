@@ -258,36 +258,15 @@ rm review-cache.json
 - **Prior review context**: when re-reviewing a branch, the prior verdict and suggestions are fed into the prompt so the model reassesses rather than repeating itself
 - **`--base <ref>`**: diffs the entire range `<ref>..HEAD` instead of `HEAD~1..HEAD` — useful for reviewing a full feature branch in one pass
 
-## Roadmap: feedback mode
+## Feedback mode
 
-Currently the agent is advisory — you read the log and decide what to act on. The planned next phase is **feedback mode**, where reviews are fed back into Claude Code automatically.
+`surface.js` is a Claude Code Stop-hook entry point. When the post-commit pipeline lands a `worth_refactoring` review for the current HEAD, surface writes it to stderr and exits 2 — Claude Code's protocol for injecting a prompt back into the conversation. Each review is surfaced at most once (tracked via the `surfaced` flag in the cache). The hook respects `stop_hook_active` so it can't recurse on its own output.
 
-### How it works (built, disabled by default)
+Wire it up by adding the Stop-hook block printed by `scripts/install-hook.sh` into `~/.claude/settings.json`, then restart Claude Code.
 
-`surface.js` is a Stop-hook entry point that reads the cache populated by the post-commit pipeline. When it finds an unread `worth_refactoring` review for HEAD, it writes the review to stderr and exits 2 — the Claude Code Stop hook protocol for surfacing a prompt back into the conversation. It marks the review as surfaced so it only fires once per commit.
+### Defer-to-worktree (planned)
 
-It is gated behind `HINDSIGHT_FEEDBACK_MODE=on` so the code ships now and activates later.
-
-### Activation
-
-When you've collected enough log data to trust the post-commit pipeline:
-
-1. Add the Stop-hook entry to `~/.claude/settings.json` (snippet in `scripts/install-hook.sh`)
-2. Set `export HINDSIGHT_FEEDBACK_MODE=on` in your shell profile
-3. Restart Claude Code
-
-Until both are in place, `surface.js` is a no-op even if the Stop hook is wired.
-
-### Defer-to-worktree option
-
-Alongside `show` and `apply`, the prompt should offer a third path: **defer the refactor to a separate worktree**. When chosen, Claude Code creates a new git worktree (on a fresh branch) and drops a markdown file at its root containing the verdict, prose, affected files, and the full suggestions list — a self-contained brief that a future session (or a later sit-down) can pick up cold.
-
-### Prerequisites before enabling
-
-1. **Calibrated trust** — at least a week of advisory-mode use to confirm reviews are reliably useful. Feedback mode amplifies signal *and* noise.
-2. **Structured severity output** — the deep review prompt needs to return JSON with an explicit `verdict` field (`clean`, `minor`, `worth_refactoring`). Only `worth_refactoring` should trigger feedback mode.
-3. **Recursion guard** — Stop hooks can fire in response to Claude Code's response to a previous Stop hook. The hook input includes a `stop_hook_active` boolean; the agent must check it and bail if true.
-4. **Escape hatch** — an env var like `HINDSIGHT_MODE=advisory` to force back to log-only without editing config.
+Alongside `show` and `apply`, the prompt should offer a third path: **defer the refactor to a separate worktree**. When chosen, Claude Code creates a new git worktree (on a fresh branch) and drops a markdown file at its root containing the verdict, prose, affected files, and the full suggestions list — a self-contained brief that a future session can pick up cold.
 
 ## Costs
 

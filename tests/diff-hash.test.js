@@ -16,28 +16,11 @@ execSync("git add . && git commit -q -m initial", { cwd: repoDir, shell: "/bin/s
 
 process.chdir(repoDir);
 
-const { computeDiffHash, computeCommitRangeHash } = await import("../lib/cache.js");
+const { computeCommitRangeHash } = await import("../lib/cache.js");
 
 after(() => {
   process.chdir(origCwd);
   rmSync(repoDir, { recursive: true, force: true });
-});
-
-test("doc file changes don't affect the hash", () => {
-  writeFileSync(join(repoDir, "app.js"), "export const x = 2;\n");
-  const before = computeDiffHash();
-  assert.equal(before.status, "ok");
-
-  // Add a markdown plan file — should NOT change the hash
-  writeFileSync(join(repoDir, "plan.md"), "# Plan\nFix things.\n");
-  const after = computeDiffHash();
-  assert.equal(after.status, "ok");
-  assert.equal(after.hash, before.hash);
-
-  // Modify a tracked code file — SHOULD change the hash
-  writeFileSync(join(repoDir, "app.js"), "export const x = 3;\n");
-  const changed = computeDiffHash();
-  assert.notEqual(changed.hash, before.hash);
 });
 
 test("computeCommitRangeHash hashes HEAD~1..HEAD diff", () => {
@@ -82,3 +65,9 @@ test("computeCommitRangeHash excludes doc files", () => {
   assert.equal(withDocs, withoutDocs);
 });
 
+test("computeCommitRangeHash returns no_changes when only doc files changed", () => {
+  writeFileSync(join(repoDir, "only-docs.md"), "# nothing real\n");
+  execSync("git add . && git commit -q -m 'docs only'", { cwd: repoDir, shell: "/bin/sh" });
+  const result = computeCommitRangeHash();
+  assert.equal(result.status, "no_changes");
+});
