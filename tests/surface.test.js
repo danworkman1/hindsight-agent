@@ -41,11 +41,12 @@ test("getReviewByCommitSha returns null for unknown sha", () => {
   assert.equal(getReviewByCommitSha("nope"), null);
 });
 
-test("surface.js exits 0 when HINDSIGHT_FEEDBACK_MODE is unset", () => {
+test("surface.js exits 0 when stop_hook_active is true (recursion guard)", () => {
   const result = spawnSync("node", ["surface.js"], {
     cwd: "/Users/danielworkman/coding/agents/hindsight-agent",
-    env: { ...process.env, HINDSIGHT_FEEDBACK_MODE: "" },
+    input: JSON.stringify({ stop_hook_active: true }),
     encoding: "utf-8",
   });
   assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
 });
