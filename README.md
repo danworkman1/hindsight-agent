@@ -55,7 +55,6 @@ Every run produces a log entry, even skips. The log is the single source of trut
 
 - **Node.js 20+**
 - **An [Anthropic API key](https://console.anthropic.com/settings/keys)**
-- **[Claude Code](https://docs.claude.com/en/docs/claude-code/overview) installed and working**
 - **Git** (the agent operates on git working trees)
 
 ## Install
@@ -63,10 +62,16 @@ Every run produces a log entry, even skips. The log is the single source of trut
 ```bash
 git clone https://github.com/dwbra/hindsight-agent.git
 cd hindsight-agent
-npm install
+pnpm install        # or npm install / yarn
 ```
 
-(Or use `pnpm` / `yarn` — your choice.)
+### Make `hindsight` available globally
+
+```bash
+pnpm link --global
+```
+
+This gives you a `hindsight` command anywhere on your machine. You can now run `hindsight` from inside any git repo, or point it at one with `--path`.
 
 ## Setup
 
@@ -78,7 +83,7 @@ Add to your shell environment:
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
 ```
 
-> **Where to put this matters for hooks.** Put it in `~/.zshenv` (zsh) or `~/.bash_profile` (bash). Files like `~/.zshrc` only run for interactive shells — Claude Code's hook spawns a non-interactive subshell, which won't see vars defined there.
+> **Where to put this matters for hooks.** Put it in `~/.zshenv` (zsh) or `~/.bash_profile` (bash). Files like `~/.zshrc` only run for interactive shells — the post-commit hook spawns a non-interactive subshell, which won't see vars defined there.
 
 Open a new terminal and verify:
 
@@ -89,21 +94,25 @@ node -e 'console.log(process.env.ANTHROPIC_API_KEY ? "OK" : "missing")'
 
 Both should succeed.
 
-### 2. Test it standalone
+### 2. Test it manually
 
-From any git repository with uncommitted changes:
+Run a manual review against any branch with code changes:
 
 ```bash
-node /absolute/path/to/hindsight-agent/index.js
+# From inside a repo
+hindsight --force --base main
+
+# Or point at a repo from anywhere
+hindsight --path /path/to/your/project --force --base main
 ```
 
 Expected output: triage runs, then either a skip message or a full review depending on whether code changed.
 
-> **If you use a Node version manager** (fnm, nvm, asdf, volta), `node` may not be on the PATH that Claude Code uses to spawn hooks. You can find your Node binary's absolute path with `which node` and use that explicitly in step 3 below.
+> **If you use a Node version manager** (fnm, nvm, asdf, volta), `node` may not be on the PATH that git hooks use. You can find your Node binary's absolute path with `which node` and use that explicitly in step 3 below.
 
 ### 3. Install the post-commit hook
 
-For each repository where you want hindsight to run, install the post-commit hook:
+For each repository where you want hindsight to run automatically after commits:
 
 ```bash
 cd /path/to/your/project
@@ -119,6 +128,44 @@ HINDSIGHT_NODE=/absolute/path/to/node /path/to/hindsight-agent/scripts/install-h
 ```
 
 To uninstall: `rm .git/hooks/post-commit`.
+
+## CLI reference
+
+```
+hindsight [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--path <dir>` | Run against this repo instead of cwd |
+| `--base <ref>` | Diff against this ref instead of HEAD~1 (e.g. `main` to review the whole branch) |
+| `--force` | Skip cache, skip-rules, and the no-changes guard — always run triage + deep review |
+| `--triage-model <model>` | Model for Phase 1 triage. Default: `haiku` |
+| `--review-model <model>` | Model for Phase 2 deep review. Default: `sonnet` |
+
+**Model values:** `haiku`, `sonnet`, `opus` (or a raw Anthropic model ID).
+
+### Examples
+
+```bash
+# Review the last commit in cwd (same as the post-commit hook)
+hindsight
+
+# Force a review of everything on this branch vs main
+hindsight --force --base main
+
+# Point at a different repo
+hindsight --path ~/coding/my-project --force --base main
+
+# Use Opus for the deep review pass
+hindsight --force --base main --review-model opus
+
+# Use Haiku for everything (cheapest)
+hindsight --force --triage-model haiku --review-model haiku
+
+# Test without a real commit (empty commit)
+git commit --allow-empty -m "test: trigger hindsight"
+```
 
 ## Daily workflow
 
@@ -167,30 +214,22 @@ grep "$(date -u +%Y-%m-%d)" reviews.log
 grep -E "^\[2[0-9]" reviews.log
 ```
 
-## Configuration
-
-Models used per phase are defined in `lib/agent-loop.js`:
-
-```javascript
-export const MODELS = {
-  HAIKU: "claude-haiku-4-5",
-  SONNET: "claude-sonnet-4-6",
-  OPUS: "claude-opus-4-7",
-};
-```
-
-Triage uses Haiku (fast and cheap), deep review uses Sonnet. If you want to use Opus for the deep review, change the model passed to `deepReview()` in `index.js`.
-
 ## File layout
 
 ```
 hindsight/
-├── index.js              ← entry point invoked by the post-commit hook
+├── index.js              ← entry point / CLI
 ├── lib/
 │   ├── agent-loop.js     ← generic agent loop (model + tools)
 │   ├── cache.js          ← diff hashing + on-disk cache
+│   ├── lock.js           ← prevents concurrent runs
 │   ├── logger.js         ← append-only review log
+│   ├── parse.js          ← JSON extraction from model output
+│   ├── prior-review.js   ← formats prior branch review for context
+│   ├── skip-rules.js     ← branch/message skip logic
 │   └── tools.js          ← tool schemas and handlers
+├── scripts/
+│   └── install-hook.sh   ← writes .git/hooks/post-commit for a repo
 ├── review-cache.json     ← created on first run (gitignored)
 └── reviews.log           ← created on first run (gitignored)
 ```
@@ -207,16 +246,17 @@ rm review-cache.json
 
 ## Behaviour notes
 
-- **Exits 0 on errors** — a failed review never blocks Claude Code
+- **Exits 0 on errors** — a failed review never blocks commits
 - **Cache** grows unbounded under normal use; soft cap at 5MB triggers eviction down to the 1000 most recent entries
-- **`process.cwd()`** of the hook process is the project you committed in, so `git diff` "just works"
+- **`process.cwd()`** of the hook process is the project you committed in, so `git diff` "just works" — or pass `--path` to override
 - **Untracked files** are included in the hash and the review (uncommitted new files would otherwise be invisible to `git diff`)
 - **Triage parse failures** are recorded in `reviews.log` but not cached, so retries can recover
-- **Non-git directories** are detected and skipped cleanly (the agent needs git to operate)
-- **Branch cap**: 3 reviews per branch. After that, commits log a `[CAP]` line and skip the model call. Run `node /path/to/index.js --force` to override.
+- **Non-git directories** are detected and skipped cleanly
+- **Branch cap**: 3 reviews per branch. After that, commits log a `[CAP]` line and skip the model call. Use `--force` to override
 - **Skipped commit messages**: `wip`, `WIP`, `[no-review]`
 - **Skipped branches**: `main`, `master` (squash-merges and CI commits don't burn reviews)
 - **Prior review context**: when re-reviewing a branch, the prior verdict and suggestions are fed into the prompt so the model reassesses rather than repeating itself
+- **`--base <ref>`**: diffs the entire range `<ref>..HEAD` instead of `HEAD~1..HEAD` — useful for reviewing a full feature branch in one pass
 
 ## Roadmap: feedback mode
 
@@ -242,22 +282,12 @@ Until both are in place, `surface.js` is a no-op even if the Stop hook is wired.
 
 Alongside `show` and `apply`, the prompt should offer a third path: **defer the refactor to a separate worktree**. When chosen, Claude Code creates a new git worktree (on a fresh branch) and drops a markdown file at its root containing the verdict, prose, affected files, and the full suggestions list — a self-contained brief that a future session (or a later sit-down) can pick up cold.
 
-The point is to keep the current session focused. The user agrees the refactor is worth doing but doesn't want to context-switch right now; the worktree+md captures everything needed to act on it later without losing the hindsight agent's reasoning. Open questions to resolve when building this:
-
-- Where worktrees live (sibling directory vs. configurable path)
-- Branch naming convention (e.g. `hindsight/<short-summary>`)
-- Whether the md file is the only artifact or whether the suggestions are also pre-applied as an unstaged diff in the worktree
-
 ### Prerequisites before enabling
 
 1. **Calibrated trust** — at least a week of advisory-mode use to confirm reviews are reliably useful. Feedback mode amplifies signal *and* noise.
 2. **Structured severity output** — the deep review prompt needs to return JSON with an explicit `verdict` field (`clean`, `minor`, `worth_refactoring`). Only `worth_refactoring` should trigger feedback mode.
 3. **Recursion guard** — Stop hooks can fire in response to Claude Code's response to a previous Stop hook. The hook input includes a `stop_hook_active` boolean; the agent must check it and bail if true.
 4. **Escape hatch** — an env var like `HINDSIGHT_MODE=advisory` to force back to log-only without editing config.
-
-### Why log-mode still matters in feedback mode
-
-The log becomes the audit trail for every auto-applied refactor. Without it, you'll look at a commit later and wonder why the code shifted mid-session. With it, you have the answer.
 
 ## Costs
 
@@ -268,7 +298,7 @@ Rough per-run costs at current Anthropic pricing:
 - Triage only, no code changes: **fractions of a cent** (Haiku, small context)
 - Triage + deep review: **a few cents** depending on diff size
 
-The cache means you only pay for unique working-tree states. In practice this is very cheap unless you're running Claude Code constantly across many projects.
+The cache means you only pay for unique working-tree states. In practice this is very cheap unless you're running it constantly across many projects.
 
 Set a monthly spending cap in the [Anthropic Console](https://console.anthropic.com/settings/limits) while you're getting comfortable.
 

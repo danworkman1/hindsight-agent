@@ -4,6 +4,9 @@
   "description": "Post-implementation code review agent triggered by Claude Code's Stop hook",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "hindsight": "./index.js"
+  },
   "scripts": {
     "start": "node index.js",
     "test": "node --test"

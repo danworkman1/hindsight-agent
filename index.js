@@ -11,7 +11,7 @@
 
 import { execSync } from "child_process";
 import { runAgent, MODELS } from "./lib/agent-loop.js";
-import { tools, toolHandlers } from "./lib/tools.js";
+import { tools, createToolHandlers } from "./lib/tools.js";
 import { computeCommitRangeHash, getCachedReview, setCachedReview, getBranchReviewCount, getLastBranchReview } from "./lib/cache.js";
 import { shouldSkip, REVIEW_CAP } from "./lib/skip-rules.js";
 import { formatPriorReviewForPrompt } from "./lib/prior-review.js";
@@ -36,7 +36,7 @@ function readCommitMetadata(sha) {
 // Phase 1: Triage. Cheap call. Was code added or refactored?
 // Returns { changed: boolean, summary: string }
 // ---------------------------------------------------------------------------
-async function triage() {
+async function triage(toolHandlers, model = MODELS.HAIKU) {
   const system = `You are a code change detector. Use the available tools to inspect the working tree and determine whether source code was added or refactored.
 
 Your ENTIRE response must be a single JSON object and nothing else. No prose before, no prose after, no markdown fences.
@@ -60,7 +60,7 @@ Rules:
     tools,
     toolHandlers,
     maxIterations: 5,
-    model: MODELS.HAIKU,
+    model,
   });
 
   const parsed = extractJsonObject(result);
@@ -80,7 +80,7 @@ Rules:
 // Phase 2: Deep review. Only runs when triage says code changed.
 // Returns a structured object { verdict, prose, files, suggestions }
 // ---------------------------------------------------------------------------
-async function deepReview(triageSummary, priorReview) {
+async function deepReview(triageSummary, priorReview, toolHandlers, model = MODELS.SONNET) {
   const priorContext = formatPriorReviewForPrompt(priorReview);
 
   const system = `You are a senior engineer doing a post-implementation review. The code WORKS — your job is not to find bugs, but to ask: now that we have a working solution and the full picture, is there a cleaner approach?
@@ -122,7 +122,7 @@ Rules:
     tools,
     toolHandlers,
     maxIterations: 15,
-    model: MODELS.SONNET,
+    model,
   });
 
   const parsed = extractJsonObject(raw);
@@ -144,10 +144,25 @@ Rules:
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-async function main() {
-  const force = process.argv.includes("--force");
+function parseModel(name) {
+  if (!name) return null;
+  const key = name.toLowerCase();
+  if (key === "haiku") return MODELS.HAIKU;
+  if (key === "sonnet") return MODELS.SONNET;
+  if (key === "opus") return MODELS.OPUS;
+  // Accept raw model IDs too
+  return name;
+}
 
-  const diffResult = computeCommitRangeHash();
+function getArg(argv, flag) {
+  const idx = argv.indexOf(flag);
+  return idx !== -1 ? argv[idx + 1] : null;
+}
+
+async function main({ force, base, triageModel, reviewModel }) {
+  const toolHandlers = createToolHandlers(base);
+
+  const diffResult = computeCommitRangeHash(base ?? undefined);
   if (diffResult.status === "not_a_repo") {
     logSkip("skip", "not a git repo");
     return;
@@ -156,7 +171,7 @@ async function main() {
     logSkip("skip", "initial commit has no parent to diff against");
     return;
   }
-  if (diffResult.status === "no_changes") {
+  if (diffResult.status === "no_changes" && !force) {
     logSkip("skip", "commit had no non-doc changes");
     return;
   }
@@ -186,7 +201,7 @@ async function main() {
   }
 
   const hash = diffResult.hash;
-  const cached = getCachedReview(hash);
+  const cached = !force ? getCachedReview(hash) : null;
   if (cached) {
     if (cached.changed) {
       logReview({
@@ -203,28 +218,39 @@ async function main() {
     return;
   }
 
-  const { changed, summary } = await triage();
-  const triageFailed = summary === "Could not parse triage output";
+  let summary;
+  if (force) {
+    summary = meta.message.split("\n")[0] || `force review of ${base ?? "HEAD"}..HEAD on ${meta.branch}`;
+    process.stderr.write(`hindsight: force mode — skipping triage, running deep review on ${meta.branch}\n`);
+    logSkip("force", `bypassing triage and cache — ${summary}`);
+  } else {
+    process.stderr.write(`hindsight: triaging ${meta.branch}...\n`);
+    const triageResult = await triage(toolHandlers, triageModel);
+    const triageFailed = triageResult.summary === "Could not parse triage output";
 
-  if (!changed) {
-    if (!triageFailed) {
-      setCachedReview(hash, {
-        changed: false,
-        summary,
-        verdict: "clean",
-        prose: "",
-        files: [],
-        suggestions: [],
-        branch: meta.branch,
-        commitSha: meta.sha,
-      });
+    if (!triageResult.changed) {
+      if (!triageFailed) {
+        setCachedReview(hash, {
+          changed: false,
+          summary: triageResult.summary,
+          verdict: "clean",
+          prose: "",
+          files: [],
+          suggestions: [],
+          branch: meta.branch,
+          commitSha: meta.sha,
+        });
+      }
+      logSkip("skip", `triage said no — ${triageResult.summary}`);
+      process.stderr.write(`hindsight: skipped — ${triageResult.summary}\n`);
+      return;
     }
-    logSkip("skip", `triage said no — ${summary}`);
-    return;
+    summary = triageResult.summary;
   }
 
+  process.stderr.write(`hindsight: running deep review (${reviewModel})...\n`);
   const priorReview = getLastBranchReview(meta.branch);
-  const result = await deepReview(summary, priorReview);
+  const result = await deepReview(summary, priorReview, toolHandlers, reviewModel);
 
   setCachedReview(hash, {
     changed: true,
@@ -234,17 +260,36 @@ async function main() {
     commitSha: meta.sha,
   });
   logReview({ summary, ...result });
+  process.stderr.write(`hindsight: review complete — verdict: ${result.verdict}\n`);
 }
 
 (async () => {
+  const argv = process.argv;
+  const force = argv.includes("--force");
+  const base = getArg(argv, "--base");
+  const pathArg = getArg(argv, "--path");
+  const triageModel = parseModel(getArg(argv, "--triage-model")) ?? MODELS.HAIKU;
+  const reviewModel = parseModel(getArg(argv, "--review-model")) ?? MODELS.SONNET;
+
+  if (pathArg) {
+    try {
+      process.chdir(pathArg);
+    } catch (err) {
+      console.error(`hindsight: cannot chdir to ${pathArg}: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
   if (!acquireLock()) {
     logSkip("skip", "another hindsight run is in progress");
+    process.stderr.write("hindsight: another run is in progress, exiting\n");
     process.exit(0);
   }
   try {
-    await main();
+    await main({ force, base, triageModel, reviewModel });
   } catch (err) {
     logError("fatal", `Reviewer agent failed: ${err.message}`, err.stack);
+    process.stderr.write(`hindsight: failed — ${err.message}\n`);
   } finally {
     releaseLock();
   }
