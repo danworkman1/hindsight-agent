@@ -5,7 +5,8 @@
   "type": "module",
   "main": "index.js",
   "bin": {
-    "hindsight-agent": "./index.js"
+    "hindsight-agent": "./index.js",
+    "hindsight-surface": "./surface.js"
   },
   "files": [
     "index.js",
@@ -21,7 +22,7 @@
     "test": "node --test"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "keywords": [
     "claude",

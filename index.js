@@ -160,6 +160,13 @@ function getArg(argv, flag) {
 }
 
 async function main({ force, base, triageModel, reviewModel }) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    const msg = "ANTHROPIC_API_KEY not set — set it in your shell environment to enable reviews";
+    logSkip("skip", msg);
+    process.stderr.write(`hindsight: ${msg}\n`);
+    return;
+  }
+
   const toolHandlers = createToolHandlers(base);
 
   const diffResult = computeCommitRangeHash(base ?? undefined);
