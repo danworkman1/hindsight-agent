@@ -66,7 +66,7 @@ In Claude Code:
 
 ```
 /plugin marketplace add danworkman1/hindsight-agent
-/plugin install hindsight-agent@danielworkman
+/plugin install hindsight-agent@danworkman1
 ```
 
 That's it. Restart Claude Code if prompted. From the next session forward, every commit Claude makes triggers an async review, and any `worth_refactoring` verdicts are surfaced back into the session via the Stop hook.

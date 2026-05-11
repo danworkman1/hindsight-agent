@@ -280,7 +280,7 @@ async function main({ force, base, triageModel, reviewModel }) {
         `  --review-model <name>       haiku|sonnet|opus or raw model id\n\n` +
         `Auto-trigger lives in the Claude Code plugin:\n` +
         `  /plugin marketplace add danworkman1/hindsight-agent\n` +
-        `  /plugin install hindsight-agent@danielworkman\n`
+        `  /plugin install hindsight-agent@danworkman1\n`
     );
     process.exit(0);
   }
