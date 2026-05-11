@@ -62,12 +62,7 @@ Every run produces a log entry, even skips. The log is the single source of trut
 
 ## Install (plugin — recommended)
 
-```bash
-# 1. Install the engine globally so hooks resolve it from PATH (faster than npx).
-npm install -g hindsight-agent
-```
-
-Then in Claude Code:
+In Claude Code:
 
 ```
 /plugin marketplace add danworkman1/hindsight-agent
@@ -76,9 +71,11 @@ Then in Claude Code:
 
 Restart Claude Code if prompted. From the next session forward, every commit, amend, or rebase Claude performs triggers an async review, and any `worth_refactoring` verdicts are surfaced back into the session via the Stop hook.
 
+On the first hook fire, the engine is fetched from npm via `npx` and cached locally (one-time, a few seconds). Subsequent fires use the cache.
+
 > **`ANTHROPIC_API_KEY` is required.** Reviews are made by a hook subprocess that bills against your **API account**, not your Claude.ai subscription — Anthropic doesn't permit third-party plugins to use subscription auth. Export `ANTHROPIC_API_KEY` in your shell rc (use `~/.zshenv` or `~/.bash_profile` so non-interactive shells inherit it). Without the key the hook logs a `[skip]` line and exits cleanly — your Claude session is never blocked.
 
-If you skip the global `npm install`, the hook still works — it falls back to `npx`, which fetches and caches the package on first run. Cold start adds a few seconds.
+> **Faster cold start (optional):** run `npm install -g hindsight-agent` once. Hooks then resolve the engine from PATH directly, skipping the npx layer.
 
 ### Tail the log (optional)
 
