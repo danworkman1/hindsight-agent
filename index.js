@@ -265,6 +265,26 @@ async function main({ force, base, triageModel, reviewModel }) {
 
 (async () => {
   const argv = process.argv;
+  const sub = argv[2];
+
+  if (sub === "--help" || sub === "-h" || sub === "help") {
+    process.stdout.write(
+      `hindsight-agent — post-implementation code review for Claude Code\n\n` +
+        `Usage:\n` +
+        `  hindsight-agent             Review HEAD~1..HEAD in the current git repo\n\n` +
+        `Flags:\n` +
+        `  --force                     Bypass triage and cache\n` +
+        `  --base <ref>                Diff against <ref>..HEAD (default HEAD~1)\n` +
+        `  --path <dir>                Run as if launched in <dir>\n` +
+        `  --triage-model <name>       haiku|sonnet|opus or raw model id\n` +
+        `  --review-model <name>       haiku|sonnet|opus or raw model id\n\n` +
+        `Auto-trigger lives in the Claude Code plugin:\n` +
+        `  /plugin marketplace add danworkman1/hindsight-agent\n` +
+        `  /plugin install hindsight-agent@danworkman1\n`
+    );
+    process.exit(0);
+  }
+
   const force = argv.includes("--force");
   const base = getArg(argv, "--base");
   const pathArg = getArg(argv, "--path");

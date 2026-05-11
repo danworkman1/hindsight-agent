@@ -1,0 +1,13 @@
+{
+  "name": "danworkman1",
+  "owner": {
+    "name": "Daniel Workman"
+  },
+  "plugins": [
+    {
+      "name": "hindsight-agent",
+      "source": ".",
+      "description": "Post-implementation code review of commits made by Claude Code. Reviews fire asynchronously after git commit/amend/rebase tool calls."
+    }
+  ]
+}
