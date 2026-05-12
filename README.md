@@ -54,13 +54,13 @@ Every run produces a log entry, even skips. The log is the single source of trut
 
 ## Requirements
 
-- **Node.js 20+** (with `npm` or `npx` on PATH)
+- **Node.js 20+** on PATH
 - **An [Anthropic API key](https://console.anthropic.com/settings/keys)** exported as `ANTHROPIC_API_KEY`. Reviews bill against your API account, **not** your Claude.ai subscription
 - **Git**
-- **Claude Code 2.x** (for the plugin install path)
+- **Claude Code 2.x**
 - **`jq`** (used by the plugin's hook script — almost certainly already on your system)
 
-## Install (plugin — recommended)
+## Install
 
 In Claude Code:
 
@@ -71,11 +71,9 @@ In Claude Code:
 
 Restart Claude Code if prompted. From the next session forward, every commit, amend, or rebase Claude performs triggers an async review, and any `worth_refactoring` verdicts are surfaced back into the session via the Stop hook.
 
-On the first hook fire, the engine is fetched from npm via `npx` and cached locally (one-time, a few seconds). Subsequent fires use the cache.
+The engine is bundled inside the plugin — no separate install step.
 
 > **`ANTHROPIC_API_KEY` is required.** Reviews are made by a hook subprocess that bills against your **API account**, not your Claude.ai subscription — Anthropic doesn't permit third-party plugins to use subscription auth. Export `ANTHROPIC_API_KEY` in your shell rc (use `~/.zshenv` or `~/.bash_profile` so non-interactive shells inherit it). Without the key the hook logs a `[skip]` line and exits cleanly — your Claude session is never blocked.
-
-> **Faster cold start (optional):** run `npm install -g hindsight-agent` once. Hooks then resolve the engine from PATH directly, skipping the npx layer.
 
 ### Tail the log (optional)
 
@@ -87,26 +85,9 @@ tail -f reviews.log
 
 You'll also want to add `reviews.log` and `review-cache.json` to your `.gitignore`.
 
-## Install (CLI — manual trigger)
-
-For one-off reviews outside a Claude Code session:
-
-```bash
-npm install -g hindsight-agent
-# or use it ephemerally: npx hindsight-agent ...
-```
-
-Then in any git repo:
-
-```bash
-hindsight-agent                    # review HEAD~1..HEAD
-hindsight-agent --base main        # review the whole branch vs main
-hindsight-agent --force            # bypass cache + skip rules
-```
-
-The CLI is the same engine the plugin uses. Useful for reviewing your own commits, replaying after a cache wipe, or testing prompt changes.
-
 ## CLI reference
+
+The plugin's engine is also exposed as a CLI (`hindsight-agent`) for one-off reviews outside a Claude Code session. The CLI is not published — to use it, clone this repo and link it locally (see `LOCAL-DEV.md`).
 
 ```
 hindsight-agent [options]
@@ -201,25 +182,6 @@ The diff-hash cache means you only pay for unique working-tree states. Set a mon
 ## Feedback mode (Stop hook internals)
 
 `surface.js` is the plugin's Stop-hook entry point. When the review pipeline lands a `worth_refactoring` verdict for the current HEAD, surface writes it to stderr and exits 2 — Claude Code's protocol for injecting a prompt back into the conversation. Each review is surfaced at most once (tracked via the `surfaced` flag in the cache). The hook respects `stop_hook_active` so it can't recurse on its own output.
-
-If you installed via `npm` (CLI only, no plugin), wire the Stop hook up by hand in `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          { "type": "command", "command": "hindsight-surface" }
-        ]
-      }
-    ]
-  }
-}
-```
-
-`hindsight-surface` is shipped as a second `bin` entry in the npm package, available globally after `npm install -g hindsight-agent`.
 
 ## Contributing
 

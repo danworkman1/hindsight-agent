@@ -3,8 +3,7 @@
 # Filters for successful git commit/amend/rebase invocations and triggers a
 # hindsight review against the appropriate range.
 #
-# Engine resolution: prefers a globally-installed `hindsight-agent` for speed,
-# falls back to npx (which fetches and caches on first run).
+# Engine is bundled in the plugin's dist/ directory.
 
 set -euo pipefail
 
@@ -31,8 +30,4 @@ case "$cmd" in
     ;;
 esac
 
-if command -v hindsight-agent >/dev/null 2>&1; then
-  exec hindsight-agent --base "$base"
-else
-  exec npx --prefer-offline -y -p hindsight-agent hindsight-agent --base "$base"
-fi
+exec node "${CLAUDE_PLUGIN_ROOT}/dist/index.js" --base "$base"
