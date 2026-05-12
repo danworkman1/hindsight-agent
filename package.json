@@ -1,16 +1,15 @@
 {
   "name": "hindsight-agent",
   "version": "0.1.0",
-  "description": "Post-implementation code review of commits made by Claude Code. Distributed as both a Claude Code plugin (auto-triggered) and a CLI (manual).",
+  "description": "Post-implementation code review of commits made by Claude Code. Distributed as a Claude Code plugin.",
   "type": "module",
   "main": "index.js",
   "bin": {
-    "hindsight-agent": "./index.js"
+    "hindsight-agent": "./dist/index.js",
+    "hindsight-surface": "./dist/surface.js"
   },
   "files": [
-    "index.js",
-    "surface.js",
-    "lib/",
+    "dist/",
     ".claude-plugin/",
     "hooks/",
     "README.md",
@@ -18,10 +17,12 @@
   ],
   "scripts": {
     "start": "node index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "build": "esbuild index.js surface.js --bundle --platform=node --format=esm --outdir=dist && chmod +x dist/index.js dist/surface.js",
+    "prepare": "npm run build"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "keywords": [
     "claude",
@@ -44,5 +45,8 @@
   "homepage": "https://github.com/danworkman1/hindsight-agent#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
   }
 }
