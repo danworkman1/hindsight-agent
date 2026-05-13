@@ -7,7 +7,7 @@
     {
       "name": "hindsight-agent",
       "source": {
-        "type": "github",
+        "source": "github",
         "repo": "danworkman1/hindsight-agent"
       },
       "description": "Post-implementation code review of commits made by Claude Code. Reviews fire asynchronously after git commit/amend/rebase tool calls."
